@@ -11,7 +11,7 @@ package glib
 // #include "glib_since_2_44.go.h"
 // #include "glib_since_2_46.go.h"
 import "C"
-import "github.com/gotk3/gotk3/internal/callback"
+import "github.com/diamondburned/go-glib/core/callback"
 
 /*
  * GListStore

@@ -29,12 +29,14 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"runtime"
 	"unsafe"
 
-	"github.com/gotk3/gotk3/internal/callback"
-	"github.com/gotk3/gotk3/internal/closure"
+	"github.com/diamondburned/go-glib/core/callback"
+	"github.com/diamondburned/go-glib/core/closure"
+	"github.com/diamondburned/go-glib/core/intern"
 )
 
 /*
@@ -185,11 +187,11 @@ func goMarshal(
 	nParams C.guint,
 	params *C.GValue,
 	invocationHint C.gpointer,
-	marshalData *C.GValue) {
+	gobject *C.GObject) {
 
 	// Get the function value associated with this callback closure.
-	fs := closure.Get(unsafe.Pointer(gclosure))
-	if !fs.IsValid() {
+	fs := intern.ObjectClosure(unsafe.Pointer(gobject), unsafe.Pointer(gclosure))
+	if fs == nil {
 		// Possible data race, bail.
 		return
 	}
@@ -524,26 +526,114 @@ type IObject interface {
 
 // Object is a representation of GLib's GObject.
 type Object struct {
+	*objectNative
+	box *intern.Box
+}
+
+// Take wraps a unsafe.Pointer as a glib.Object, taking ownership of it.
+// This function is exported for visibility in other gotk3 packages and
+// is not meant to be used by applications.
+//
+// To be clear, this should mostly be used when Gtk says "transfer none". Refer
+// to AssumeOwnership for more details.
+func Take(ptr unsafe.Pointer) *Object {
+	obj := newObject(ptr)
+	if obj == nil {
+		return nil
+	}
+
+	obj.addToggleRef()
+
+	return obj
+}
+
+// AssumeOwnership is similar to Take, except the function does not take a
+// reference. This is usually used for newly constructed objects that for some
+// reason does not have an initial floating reference.
+//
+// To be clear, this should often be used when Gtk says "transfer full", as it
+// means the ownership is transferred to us (Go), so we can assume that much.
+// This is in contrary to Take, which is used when Gtk says "transfer none", as
+// we're now referencing an object that might possibly be kept by C, so we
+// should take our own.
+func AssumeOwnership(ptr unsafe.Pointer) *Object {
+	obj := newObject(ptr)
+	if obj == nil {
+		return nil
+	}
+
+	obj.addToggleRef()
+	obj.Unref()
+
+	return obj
+}
+
+//export goToggleNotify
+func goToggleNotify(_ C.gpointer, obj *C.GObject, isLastInt C.gboolean) {
+	isLast := isLastInt != 0
+	if isLast {
+		// Only Go's reference remains. Since Go still has a reference, we
+		// should move the closures to the weak map so the finalizer checks can
+		// work.
+		intern.MakeWeak(unsafe.Pointer(obj))
+	} else {
+		// C still has the object, which might reference the closures. Until
+		// then, we have to keep strong references to the closures.
+		intern.MakeStrong(unsafe.Pointer(obj))
+	}
+}
+
+// objectNative wraps around a native C object. It exists to work around
+// runtime.SetFinalizer's cyclic restriction.
+type objectNative struct {
 	GObject *C.GObject
 }
 
-func (v *Object) toGObject() *C.GObject {
-	if v == nil {
+// newObject creates a new Object from a GObject pointer with the finalizer set.
+func newObject(ptr unsafe.Pointer) *Object {
+	if ptr == nil {
 		return nil
 	}
+
+	native := &objectNative{GObject: (*C.GObject)(ptr)}
+	native.attachFinalizer()
+
+	return &Object{
+		objectNative: native,
+		box:          intern.ObjectBox(ptr),
+	}
+}
+
+func (native *objectNative) addToggleRef() {
+	C.g_object_add_toggle_ref(native.GObject, (*[0]byte)(C.goToggleNotify), nil)
+}
+
+func (native *objectNative) removeToggleRef() {
+	C.g_object_remove_toggle_ref(native.GObject, (*[0]byte)(C.goToggleNotify), nil)
+}
+
+func (native *objectNative) attachFinalizer() {
+	runtime.SetFinalizer(native, finalizeObjectNative)
+}
+
+func finalizeObjectNative(native *objectNative) {
+	log.Println("finalizing native", unsafe.Pointer(native.GObject))
+
+	if !intern.ShouldFree(unsafe.Pointer(native.GObject)) {
+		// Delegate finalizing to the next cycle.
+		native.attachFinalizer()
+		return
+	}
+
+	native.removeToggleRef()
+}
+
+func (v *Object) toGObject() *C.GObject {
 	return v.native()
 }
 
 func (v *Object) toObject() *Object {
 	return v
-}
-
-// newObject creates a new Object from a GObject pointer.
-func newObject(p *C.GObject) *Object {
-	if p == nil {
-		return nil
-	}
-	return &Object{GObject: p}
 }
 
 // native returns a pointer to the underlying GObject.
@@ -573,38 +663,6 @@ func (v *Object) goValue() (interface{}, error) {
 	val.SetInstance(uintptr(unsafe.Pointer(v.GObject)))
 	rv, err := f(uintptr(unsafe.Pointer(val.native())))
 	return rv, err
-}
-
-// Take wraps a unsafe.Pointer as a glib.Object, taking ownership of it.
-// This function is exported for visibility in other gotk3 packages and
-// is not meant to be used by applications.
-//
-// To be clear, this should mostly be used when Gtk says "transfer none". Refer
-// to AssumeOwnership for more details.
-func Take(ptr unsafe.Pointer) *Object {
-	obj := newObject(ToGObject(ptr))
-	if obj == nil {
-		return nil
-	}
-
-	obj.RefSink()
-	runtime.SetFinalizer(obj, (*Object).Unref)
-	return obj
-}
-
-// AssumeOwnership is similar to Take, except the function does not take a
-// reference. This is usually used for newly constructed objects that for some
-// reason does not have an initial floating reference.
-//
-// To be clear, this should often be used when Gtk says "transfer full", as it
-// means the ownership is transferred to the caller, so we can assume that much.
-// This is in contrary to Take, which is used when Gtk says "transfer none", as
-// we're now referencing an object that might possibly be kept, so we should
-// mark as such.
-func AssumeOwnership(ptr unsafe.Pointer) *Object {
-	obj := newObject(ToGObject(ptr))
-	runtime.SetFinalizer(obj, (*Object).Unref)
-	return obj
 }
 
 // Native returns a pointer to the underlying GObject.
@@ -779,7 +837,6 @@ func (v *Object) HandlerUnblock(handle SignalHandle) {
 func (v *Object) HandlerDisconnect(handle SignalHandle) {
 	// Ensure that Gtk will not use the closure beforehand.
 	C.g_signal_handler_disconnect(C.gpointer(v.GObject), C.gulong(handle))
-	closure.DisconnectSignal(uint(handle))
 }
 
 // Wrapper function for new objects with reference management.
@@ -1229,7 +1286,7 @@ func marshalPointer(p uintptr) (interface{}, error) {
 
 func marshalObject(p uintptr) (interface{}, error) {
 	c := C.g_value_get_object((*C.GValue)(unsafe.Pointer(p)))
-	return newObject((*C.GObject)(c)), nil
+	return Take(unsafe.Pointer(c)), nil
 }
 
 func marshalVariant(p uintptr) (interface{}, error) {

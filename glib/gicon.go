@@ -7,7 +7,6 @@ package glib
 import "C"
 import (
 	"errors"
-	"runtime"
 	"unsafe"
 )
 
@@ -98,10 +97,9 @@ func IconNewForString(str string) (*Icon, error) {
 		return nil, errors.New(C.GoString((*C.char)(err.message)))
 	}
 
-	obj := &Object{ToGObject(unsafe.Pointer(c))}
+	obj := AssumeOwnership(unsafe.Pointer(c))
 	i := &Icon{obj}
 
-	runtime.SetFinalizer(i, func(_ interface{}) { obj.Unref() })
 	return i, nil
 }
 

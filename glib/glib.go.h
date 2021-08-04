@@ -141,18 +141,11 @@ extern void removeSourceFunc(gpointer data);
 extern gboolean sourceFunc(gpointer data);
 
 extern void goMarshal(GClosure *, GValue *, guint, GValue *, gpointer,
-                      GValue *);
-extern void removeClosure(gpointer, GClosure *);
+                      GObject *);
 
-static inline GClosure *_g_closure_new() {
-  GClosure *closure;
+extern void goToggleNotify(gpointer, GObject *, gboolean);
 
-  closure = g_closure_new_simple(sizeof(GClosure), NULL);
-  g_closure_set_marshal(closure, (GClosureMarshal)(goMarshal));
-  g_closure_add_finalize_notifier(closure, NULL,
-                                  (GClosureNotify)(removeClosure));
-  return closure;
-}
+extern void removeClosure(GObject *, GClosure *);
 
 static inline guint _g_signal_new(const gchar *name) {
   return g_signal_new(name, G_TYPE_OBJECT, G_SIGNAL_RUN_FIRST | G_SIGNAL_ACTION,

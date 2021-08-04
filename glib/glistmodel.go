@@ -13,7 +13,7 @@ import "C"
 import (
 	"unsafe"
 
-	"github.com/gotk3/gotk3/internal/callback"
+	"github.com/diamondburned/go-glib/core/callback"
 )
 
 /*

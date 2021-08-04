@@ -8,7 +8,8 @@ import (
 	"reflect"
 	"unsafe"
 
-	"github.com/gotk3/gotk3/internal/closure"
+	"github.com/diamondburned/go-glib/core/closure"
+	"github.com/diamondburned/go-glib/core/intern"
 )
 
 /*
@@ -109,44 +110,31 @@ func (v *Object) connectClosure(after bool, detailedSignal string, f interface{}
 	cstr := C.CString(detailedSignal)
 	defer C.free(unsafe.Pointer(cstr))
 
-	gclosure := ClosureNewFunc(fs)
-	c := C.g_signal_connect_closure(C.gpointer(v.native()), (*C.gchar)(cstr), gclosure, gbool(after))
-
-	// TODO: There's a slight race condition here, where
-	// g_signal_connect_closure may trigger signal callbacks before the signal
-	// is registered. It is therefore ideal to have another intermediate ID to
-	// pass into the connect function. This is not a big issue though, since
-	// there isn't really any guarantee that signals should arrive until after
-	// the Connect functions return successfully.
-	closure.RegisterSignal(uint(c), unsafe.Pointer(gclosure))
+	gclosure := v.ClosureNew(fs)
+	c := C.g_signal_connect_closure(C.gpointer(v.GObject), (*C.gchar)(cstr), gclosure, gbool(after))
 
 	return SignalHandle(c)
 }
 
-// ClosureNew creates a new GClosure and adds its callback function to the
-// internal registry. It's exported for visibility to other gotk3 packages and
-// should not be used in a regular application.
-func ClosureNew(f interface{}) *C.GClosure {
-	return ClosureNewFunc(closure.NewFuncStack(f, 2))
-}
+// ClosureNew creates a new GClosure that's bound to the current object and adds
+// its callback function to the internal registry. It's exported for visibility
+// to other gotk3 packages and should not be used in a regular application.
+func (v *Object) ClosureNew(f interface{}) *C.GClosure {
+	fs, ok := f.(*closure.FuncStack)
+	if !ok {
+		fs = closure.NewFuncStack(f, 2)
+	}
 
-// ClosureNewFunc creates a new GClosure and adds its callback function to the
-// internal registry. It's exported for visibility to other gotk3 packages; it
-// cannot be used in application code, as package closure is part of the
-// internals.
-func ClosureNewFunc(funcStack closure.FuncStack) *C.GClosure {
-	gclosure := C._g_closure_new()
-	closure.Assign(unsafe.Pointer(gclosure), funcStack)
+	gclosure := C.g_closure_new_simple(C.sizeof_GClosure, nil)
+	v.box.Closures.Register(unsafe.Pointer(gclosure), fs)
+
+	C.g_closure_set_meta_marshal(gclosure, C.gpointer(v.GObject), (*[0]byte)(C.goMarshal))
+	C.g_closure_add_finalize_notifier(gclosure, C.gpointer(v.GObject), (*[0]byte)(C.removeClosure))
 
 	return gclosure
 }
 
-// removeClosure removes a closure from the internal closures map. This is
-// needed to prevent a leak where Go code can access the closure context
-// (along with rf and userdata) even after an object has been destroyed and
-// the GClosure is invalidated and will never run.
-//
 //export removeClosure
-func removeClosure(_ C.gpointer, gclosure *C.GClosure) {
-	closure.Delete(unsafe.Pointer(gclosure))
+func removeClosure(obj *C.GObject, gclosure *C.GClosure) {
+	intern.RemoveClosure(unsafe.Pointer(obj), unsafe.Pointer(gclosure))
 }
