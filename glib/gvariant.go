@@ -440,7 +440,7 @@ func VariantParse(vType *VariantType, text string) (*Variant, error) {
 	c := C.g_variant_parse(vType.native(), (*C.gchar)(cstr), nil, nil, &gerr)
 	if c == nil {
 		defer C.g_error_free(gerr)
-		return nil, errors.New(goString(gerr.message))
+		return nil, errors.New(C.GoString(gerr.message))
 	}
 	// will be freed during GC
 	return takeVariant(c), nil
